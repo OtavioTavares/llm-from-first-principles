@@ -7,6 +7,10 @@ simbolos novos. Diferente do CharTokenizer, aqui V e uma DECISAO
 Este arquivo comeca pelos dois primitivos do algoritmo. A classe vem depois.
 """
 
+from pathlib import Path
+
+CABECALHO = "llm-bpe v1"
+
 
 def get_stats(ids: list[int]) -> dict[tuple[int, int], int]:
     """Conta quantas vezes cada par ADJACENTE aparece em `ids`.
@@ -140,6 +144,90 @@ class BPETokenizer:
             self.vocab[novo] = self.vocab[melhor[0]] + self.vocab[melhor[1]]
 
 
+
+    def save(self, path: str | Path) -> None:
+        """Grava o tokenizer treinado em disco.
+
+        Formato (texto puro, uma fusao por linha):
+
+            llm-bpe v1
+            97 110
+            98 256
+            257 256
+
+        O cabecalho identifica a versao do formato -- ele vai mudar quando
+        entrarem tokens especiais e o padrao regex.
+
+        SO O `merges` E SALVO. O `vocab` e inteiramente derivado dele (base =
+        os 256 bytes, cada entrada nova = concatenacao dos pais), entao gravar
+        os dois criaria duas fontes de verdade que podem divergir.
+
+        O ID TAMBEM NAO E SALVO: a rodada i sempre recebe o id 256 + i, entao a
+        ORDEM DAS LINHAS ja carrega essa informacao. A linha 0 define o 256, a
+        linha 1 define o 257, e assim por diante.
+
+        Dicas:
+            Path(path).write_text(texto, encoding="utf-8")
+            "\\n".join(lista_de_strings)    junta linhas
+            f"{a} {b}"                      formata um par
+        """
+        linhas = [CABECALHO]
+        for esq, dir_ in self.merges:
+            linhas.append(f"{esq} {dir_}")
+
+        Path(path).write_text("\n".join(linhas), encoding="utf-8")
+
+    @classmethod
+    def load(cls, path: str | Path) -> "BPETokenizer":
+        """Reconstroi um tokenizer a partir do arquivo gravado por save().
+
+        E um classmethod: nao opera sobre uma instancia existente, CRIA uma
+        nova. Chamada como BPETokenizer.load("tok.txt"), sem instanciar antes.
+        Dentro do metodo, `cls` e a propria classe -- cls() cria a instancia.
+
+        Passos:
+          1. Leia o arquivo e separe as linhas.
+          2. Confira o cabecalho; se nao for o esperado, levante ValueError com
+             mensagem util. Arquivo de formato errado deve falhar alto, nao
+             produzir um tokenizer silenciosamente quebrado.
+          3. Crie a instancia e inicialize vocab com os 256 bytes e merges vazio
+             -- exatamente como o train faz no comeco.
+          4. Para cada linha restante, na ordem:
+               - leia os dois inteiros do par
+               - o id novo e 256 + (indice da linha)
+               - registre em self.merges
+               - reconstrua self.vocab[novo] concatenando os bytes dos pais
+
+        O passo 4 e o mesmo da inducao do train, menos a descoberta: la voce
+        contava para achar o par, aqui voce ja sabe qual e.
+
+        Dicas:
+            Path(path).read_text(encoding="utf-8").splitlines()
+            int("97")           converte texto para inteiro
+            linha.split()       quebra "97 110" em ["97", "110"]
+            enumerate(x)        da (indice, elemento)
+        """
+        linhas = Path(path).read_text(encoding="utf-8").splitlines()
+
+        if not linhas or linhas[0] != CABECALHO:
+            visto = linhas[0] if linhas else "<arquivo vazio>"
+            raise ValueError(
+                f"formato desconhecido: esperava {CABECALHO!r}, veio {visto!r}"
+            )
+
+        tok = cls()
+        tok.vocab = {i: bytes([i]) for i in range(256)}
+        tok.merges = {}
+
+        # Mesma inducao do train, menos a descoberta: la o par era contado,
+        # aqui ele ja vem escrito. A ordem das linhas da o id.
+        for i, linha in enumerate(linhas[1:]):
+            esq, dir_ = (int(x) for x in linha.split())
+            novo = 256 + i
+            tok.merges[(esq, dir_)] = novo
+            tok.vocab[novo] = tok.vocab[esq] + tok.vocab[dir_]
+
+        return tok
 
     def decode(self, ids: list[int]) -> str:
         """ids -> texto.
