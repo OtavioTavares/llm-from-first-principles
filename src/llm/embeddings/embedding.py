@@ -47,17 +47,19 @@ class Embedding:
         matematica por tras dessa escolha quando chegarmos na inicializacao de
         verdade. Por ora, aceite como convencao.
         """
-        raise NotImplementedError
+        rng = np.random.default_rng(seed)        # gerador reprodutível
+        self.weight = rng.normal(0, std, size=(vocab_size, d_model)) # matriz a×b sorteada de N(loc, scale)
+
 
     @property
     def vocab_size(self) -> int:
         """V -- numero de tokens distintos. Dica: self.weight.shape da (V, d)."""
-        raise NotImplementedError
+        return self.weight.shape[0]
 
     @property
     def d_model(self) -> int:
         """d -- dimensao de cada vetor de token."""
-        raise NotImplementedError
+        return self.weight.shape[1]
 
     def forward(self, ids: list[int]) -> np.ndarray:
         """ids -> matriz (len(ids), d_model), uma linha por token.
@@ -93,4 +95,5 @@ class Embedding:
         Essa equivalencia e o que garante que o gradiente flui por aqui como por
         qualquer outra camada linear.
         """
-        raise NotImplementedError
+        
+        return self.weight[ids]

@@ -1,6 +1,7 @@
 # 03 — Embeddings
 
-> Código: `src/llm/embeddings/embedding.py` · Testes: `tests/test_embedding.py`
+> Código: `src/llm/embeddings/embedding.py`, `src/llm/embeddings/similarity.py`
+> Testes: `tests/test_embedding.py`, `tests/test_similarity.py`
 > Pré-requisito: [02 — BPE](02_bpe.md)
 
 Aqui a matemática muda de natureza: sai combinatória, entra álgebra linear.
@@ -254,11 +255,190 @@ roadmap). Vale guardar: é uma lacuna deliberada, não um descuido.
 
 ---
 
+## Similaridade: dando sentido aos vetores
+
+> Código: `src/llm/embeddings/similarity.py` · Testes: `tests/test_similarity.py`
+
+Sem uma medida de similaridade, a tabela é só um monte de números. Duas operações
+geométricas resolvem isso.
+
+### Norma: o comprimento de um vetor
+
+Em 2D, `[3, 4]` é uma seta da origem até o ponto (3, 4), e seu comprimento sai de
+Pitágoras:
+
+```
+        (3,4)
+         ╱│
+      5 ╱ │ 4          |a| = √(3² + 4²) = √25 = 5
+       ╱  │
+      ╱___│
+        3
+```
+
+Em `d` dimensões a fórmula é **idêntica**, só com mais termos:
+
+```
+|a| = √(a₁² + a₂² + ... + a_d²)
+```
+
+> Você não consegue *visualizar* `R^768`, mas a aritmética não muda. É por isso
+> que álgebra linear funciona: as fórmulas não sabem quantas dimensões existem.
+> (`test_norm_em_muitas_dimensoes` usa cem `1`s e espera `√100 = 10`.)
+
+### Produto escalar
+
+Multiplique coordenada a coordenada e some:
+
+```
+a = [3, 4]
+b = [4, 3]       a · b = 3×4 + 4×3 = 24
+```
+
+Dois vetores entram, **um número** sai — daí "escalar".
+
+### A ponte entre álgebra e geometria
+
+```
+a · b  =  |a| · |b| · cos(θ)
+└─┬──┘    └───────┬───────┘
+ soma de         ângulo entre
+ produtos        as duas setas
+```
+
+O lado esquerdo é aritmética pura — você calcula sem saber o que é ângulo. O
+direito é geometria pura. **São iguais.**
+
+Essa igualdade é o que permite medir *orientação* com uma soma de multiplicações,
+e é a razão de redes neurais conseguirem fazer geometria em hardware que só sabe
+multiplicar matrizes.
+
+Verificando: `|a| = |b| = 5`, logo `cos θ = 24/25 = 0.96`, ou θ ≈ 16°. Confere com
+a intuição — `[3,4]` e `[4,3]` são espelhadas em torno da diagonal.
+
+### Por que cosseno, e não o produto escalar cru
+
+O produto escalar mistura **orientação** com **tamanho**:
+
+```
+[1, 0] · [1, 0]  =  1
+[1, 0] · [2, 0]  =  2      ← mesma direção, resultado dobrado
+```
+
+Usar o produto escalar cru como similaridade faria tokens com vetores grandes
+parecerem "mais similares a tudo" — artefato, não semântica. Dividir pelas normas
+remove o tamanho e isola a direção:
+
+```
+                a · b
+cos(θ)  =  ─────────────
+              |a| · |b|
+
+cos = +1    mesma direção        ───→  ───→
+cos =  0    perpendiculares      ───→   ↑
+cos = -1    direções opostas     ───→  ←───
+```
+
+> Guarde `a · b = |a||b|cos(θ)`. Ela reaparece **literalmente igual** dentro da
+> self-attention: `Q @ Kᵀ` é uma matriz de produtos escalares medindo quanto cada
+> posição se importa com cada outra.
+
+### O caso do vetor nulo
+
+```python
+if denominador == 0:
+    return 0.0
+```
+
+`norm` do vetor nulo é `0`, e `0/0` é **indeterminado** — NumPy devolve `nan`, sem
+levantar exceção.
+
+`nan` é perigoso porque **contamina**: qualquer conta com `nan` dá `nan`, então um
+único vetor nulo transforma a loss inteira em `nan` e nenhum gradiente faz sentido
+mais. Pior, `nan == nan` é `False`, então comparações não pegam.
+
+*(Comparar float com `==` aqui é a exceção à regra do `np.allclose`: zero é
+exatamente representável, e `norm` de um vetor de zeros dá exatamente `0.0`, não
+"quase zero". A regra do `allclose` vale para resultados de contas acumuladas.)*
+
+---
+
+## Em dimensão alta, tudo é perpendicular a tudo
+
+Este é o resultado mais importante da lição, e é contraintuitivo.
+
+Pares de vetores aleatórios, 3.000 amostras por dimensão:
+
+| `d` | desvio do cosseno | `1/√d` | `\|cos\|` máximo |
+|---|---|---|---|
+| 2 | 0.7088 | 0.7071 | 1.000 |
+| 4 | 0.4954 | 0.5000 | 0.993 |
+| 16 | 0.2454 | 0.2500 | 0.805 |
+| 64 | 0.1216 | 0.1250 | 0.423 |
+| 128 | 0.0887 | 0.0884 | 0.324 |
+| 768 | 0.0367 | 0.0361 | 0.129 |
+| 4.096 | 0.0157 | 0.0156 | 0.058 |
+
+O desvio medido acompanha **`1/√d`** em três ordens de grandeza.
+
+Em `R²`, dois vetores aleatórios têm cosseno espalhado por todo o intervalo
+`[-1, 1]` — o máximo observado é `1.000`. Em `R^768`, nenhum dos 3.000 pares
+passou de `0.129`. Todos quase ortogonais.
+
+Duas consequências que vão importar:
+
+**É a linha de base — o zero da régua.** Este é o estado de "nenhum conhecimento".
+Depois do treino, "rei" e "rainha" terão cosseno muito acima de `1/√d`, e é por
+contraste com esse caos que a estrutura fica visível. Medir o ruído agora é o que
+torna o sinal mensurável depois.
+
+**É o que torna `d` grande útil.** Como vetores aleatórios já nascem quase
+ortogonais, há espaço de sobra para o gradiente posicionar milhares de
+agrupamentos distintos sem que se atrapalhem. Em `d = 2` tudo colide; em `d = 768`
+cabe muita estrutura simultânea — por tema, por classe gramatical, por registro,
+por idioma.
+
+---
+
 ## Estado do código
 
 | Item | Status |
 |---|---|
-| `Embedding.__init__` | ⬜ |
-| `Embedding.vocab_size` / `.d_model` | ⬜ |
-| `Embedding.forward(ids)` | ⬜ |
-| Similaridade (produto escalar / cosseno) | ⬜ |
+| `Embedding.__init__` | ✅ |
+| `Embedding.vocab_size` / `.d_model` | ✅ |
+| `Embedding.forward(ids)` | ✅ |
+| `similarity.norm` / `.dot` / `.cosine_similarity` | ✅ |
+
+```python
+class Embedding:
+    def __init__(self, vocab_size, d_model, std=0.02, seed=0):
+        rng = np.random.default_rng(seed)
+        self.weight = rng.normal(0, std, size=(vocab_size, d_model))
+
+    @property
+    def vocab_size(self): return self.weight.shape[0]
+
+    @property
+    def d_model(self): return self.weight.shape[1]
+
+    def forward(self, ids):
+        return self.weight[ids]
+```
+
+## Três armadilhas de NumPy que já apareceram
+
+**Eixo 0 é linha, eixo 1 é coluna.** Em `weight`, linha = token, coluna =
+dimensão. Quase todo bug de NumPy daqui pra frente vai ser eixo trocado, e a
+mensagem costuma ser só `shapes not aligned` sem dizer qual.
+
+**Inteiro achata, lista preserva.**
+
+```python
+A[2]          → forma (d,)      ← perdeu uma dimensão
+A[[2]]        → forma (1, d)    ← continua 2-D
+A[[]]         → forma (0, d)    ← lista vazia funciona de graça
+```
+
+**Nunca compare floats com `==`.** A multiplicação `one_hot @ weight` soma `V`
+produtos e pode diferir do valor original na 16ª casa decimal. Use
+`np.allclose(a, b)`, que compara com tolerância.

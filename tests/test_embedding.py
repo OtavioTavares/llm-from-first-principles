@@ -106,8 +106,18 @@ def test_seeds_diferentes_dao_tabelas_diferentes():
 def test_recebe_a_saida_do_tokenizer():
     from llm.tokenizer.bpe import BPETokenizer
 
+    # O numero de merges possiveis depende da DIVERSIDADE do texto, nao do
+    # tamanho: repetir a mesma frase 20x esgota os pares em ~32 merges.
+    corpus = (
+        "Uma noite destas, vindo da cidade para o Engenho Novo, encontrei num "
+        "trem da Central um rapaz do bairro, que eu conheco de vista e de "
+        "chapeu. Cumprimentou-me, sentou-se ao pe de mim, falou da Lua e dos "
+        "ministros, e acabou recitando-me versos. A viagem era curta, e os "
+        "versos pode ser que nao fossem inteiramente maus. Sucedeu, porem, que "
+        "como eu estava cansado, fechei os olhos tres ou quatro vezes."
+    )
     tok = BPETokenizer()
-    tok.train("o rato roeu a roupa do rei de roma", vocab_size=300)
+    tok.train(corpus, vocab_size=300)
 
     emb = Embedding(vocab_size=len(tok.vocab), d_model=16, seed=0)
     ids = tok.encode("o rato")
